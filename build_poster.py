@@ -1,242 +1,215 @@
 #!/usr/bin/env python3
-"""Draw the 19 November 2026 world-news poster (1024x1024) with PIL.
+"""Draw the news-image-20261119 entry: a 1024x1024 newspaper poster.
 
-Every pixel is drawn in code: flat colour blocks, rules, simple
-pictograms and wrapped text. No external images, no network.
-Stories are the day's real headlines, checked against several
-news round-ups for 19 November 2026.
+One page of world news for Thursday 19 November 2026, drawn entirely in
+code with Pillow: no external images, no network, fully deterministic
+(running it twice produces a byte-identical PNG).
+
+Layout, top to bottom: masthead, lead story (Shenzhen trilateral summit),
+two rows of two stories (The Hague, Kerch Bridge / Gaza, Bangladesh),
+a closing art-and-climate band, and a footer line.
 """
-import textwrap
+
+import os
+
 from PIL import Image, ImageDraw, ImageFont
 
-W = H = 1024
-PAPER = (247, 243, 234)
-INK = (20, 20, 26)
-NAVY = (18, 32, 62)
-RED = (178, 34, 34)
-GOLD = (201, 162, 39)
-TEAL = (15, 118, 110)
-SLATE = (90, 96, 110)
-CARD = (255, 255, 255)
-LINE = (200, 192, 175)
+SIZE = 1024
+MARGIN = 30
+PAPER = (248, 244, 233)
+CARD = (255, 253, 245)
+INK = (26, 26, 26)
+MUTED = (90, 84, 70)
+ACCENT = (155, 28, 28)
+RULE = (26, 26, 26)
 
-SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-SERIF_R = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
-SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-SANS_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+SERIF_BOLD = os.path.join(FONT_DIR, "DejaVuSerif-Bold.ttf")
+SANS = os.path.join(FONT_DIR, "DejaVuSans.ttf")
+SANS_BOLD = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
 
 
 def font(path, size):
     return ImageFont.truetype(path, size)
 
 
-def wrap(draw, text, fnt, width):
-    """Greedy word wrap to a pixel width; returns list of lines."""
-    lines, cur = [], ""
-    for word in text.split():
-        trial = (cur + " " + word).strip()
-        if draw.textlength(trial, font=fnt) <= width:
-            cur = trial
-        else:
-            if cur:
-                lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
+def wrap(draw, text, fnt, max_width):
+    """Greedy word wrap; returns a list of lines that fit max_width."""
+    lines = []
+    for paragraph in text.split("\n"):
+        words = paragraph.split()
+        if not words:
+            lines.append("")
+            continue
+        current = words[0]
+        for word in words[1:]:
+            trial = current + " " + word
+            if draw.textlength(trial, font=fnt) <= max_width:
+                current = trial
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
     return lines
 
 
-def para(draw, x, y, text, fnt, width, fill=INK, leading=6):
-    lines = wrap(draw, text, fnt, width)
-    for ln in lines:
-        draw.text((x, y), ln, font=fnt, fill=fill)
-        y += fnt.size + leading
+def text_height(draw, lines, fnt, leading):
+    if not lines:
+        return 0
+    ascent, descent = fnt.getmetrics()
+    return len(lines) * (ascent + descent + leading) - leading
+
+
+def draw_wrapped(draw, x, y, lines, fnt, fill, leading=4):
+    ascent, descent = fnt.getmetrics()
+    step = ascent + descent + leading
+    for line in lines:
+        draw.text((x, y), line, font=fnt, fill=fill)
+        y += step
     return y
 
 
-def kicker(draw, x, y, text, color=RED, size=21):
-    f = font(SANS_B, size)
-    draw.text((x, y), text, font=f, fill=color)
-    return y + size + 8
+def fit_body(draw, text, fnt_sizes, max_width, max_height, leading=4):
+    """Pick the largest body size whose wrapped text fits max_height.
+
+    Returns (font, lines). Raises if even the smallest size overflows,
+    so an overflowing poster fails loudly instead of clipping text.
+    """
+    for size in fnt_sizes:
+        fnt = font(SANS, size)
+        lines = wrap(draw, text, fnt, max_width)
+        if text_height(draw, lines, fnt, leading) <= max_height:
+            return fnt, lines
+    raise ValueError("body text does not fit: %r" % text[:60])
 
 
-def headline(draw, x, y, text, size, width, fill=INK, fnt_path=SERIF):
-    f = font(fnt_path, size)
-    return para(draw, x, y, text, f, width, fill=fill, leading=4)
+def draw_card(draw, box, kicker, headline, body, head_size, body_sizes,
+              head_lines_max=2):
+    """Draw one story card; returns nothing, raises on overflow."""
+    x0, y0, x1, y1 = box
+    draw.rectangle([x0, y0, x1, y1], fill=CARD, outline=INK, width=2)
+    pad = 18
+    inner_w = (x1 - x0) - 2 * pad
+    y = y0 + 14
+
+    kick_font = font(SANS_BOLD, 15)
+    draw.text((x0 + pad, y), kicker, font=kick_font, fill=ACCENT)
+    y += 24
+
+    head_font = font(SERIF_BOLD, head_size)
+    head_lines = wrap(draw, headline, head_font, inner_w)
+    if len(head_lines) > head_lines_max:
+        raise ValueError("headline too long: %r" % headline)
+    y = draw_wrapped(draw, x0 + pad, y, head_lines, head_font, INK, leading=2)
+
+    body_top = y + 8
+    body_bottom = y1 - 14
+    body_font, body_lines = fit_body(
+        draw, body, body_sizes, inner_w, body_bottom - body_top)
+    draw_wrapped(draw, x0 + pad, body_top, body_lines, body_font, INK)
 
 
-def card(draw, x, y, w, h, accent):
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=10,
-                           fill=CARD, outline=LINE, width=2)
-    draw.rectangle([x, y, x + w, y + 8], fill=accent)
+def draw_masthead(draw):
+    """Title, dateline and rules across the top of the page."""
+    cx = SIZE // 2
+    title_font = font(SERIF_BOLD, 56)
+    title = "THE WORLD IN ONE PAGE"
+    tw = draw.textlength(title, font=title_font)
+    draw.text((cx - tw / 2, 34), title, font=title_font, fill=INK)
+
+    date_font = font(SANS, 22)
+    dateline = "Thursday, 19 November 2026"
+    dw = draw.textlength(dateline, font=date_font)
+    draw.text((cx - dw / 2, 108), dateline, font=date_font, fill=MUTED)
+
+    draw.line([(MARGIN, 142), (SIZE - MARGIN, 142)], fill=RULE, width=3)
+    draw.line([(MARGIN, 148), (SIZE - MARGIN, 148)], fill=RULE, width=1)
 
 
-def scales(draw, cx, cy, s, color):
-    """Simple scales-of-justice pictogram centred at (cx, cy)."""
-    draw.line([(cx, cy - 34 * s), (cx, cy + 30 * s)], fill=color, width=5)
-    draw.line([(cx - 42 * s, cy - 22 * s), (cx + 42 * s, cy - 22 * s)],
-              fill=color, width=5)
-    draw.ellipse([cx - 6 * s, cy - 42 * s, cx + 6 * s, cy - 30 * s],
-                 fill=color)
-    for dx in (-42, 42):
-        draw.line([(cx + dx * s, cy - 22 * s), (cx + dx * s - 16 * s, cy + 6 * s)],
-                  fill=color, width=4)
-        draw.line([(cx + dx * s, cy - 22 * s), (cx + dx * s + 16 * s, cy + 6 * s)],
-                  fill=color, width=4)
-        draw.arc([cx + dx * s - 18 * s, cy - 4 * s, cx + dx * s + 18 * s,
-                  cy + 22 * s], 0, 180, fill=color, width=4)
-    draw.rectangle([cx - 26 * s, cy + 30 * s, cx + 26 * s, cy + 36 * s],
-                   fill=color)
+def draw_footer(draw):
+    foot_font = font(SANS, 15)
+    line = "Drawn entirely in code  |  Python + PIL  |  No external images"
+    fw = draw.textlength(line, font=foot_font)
+    draw.text(((SIZE - fw) / 2, 956), line, font=foot_font, fill=MUTED)
 
 
-def bridge(draw, x, y, w, h, color):
-    """A suspension bridge with its middle span dropped."""
-    deck = y + h - 18
-    draw.line([(x, deck), (x + w, deck)], fill=color, width=6)
-    for tx in (x + 8, x + w - 8):
-        draw.line([(tx, y + 6), (tx, deck)], fill=color, width=6)
-    # left cables + deck segment
-    draw.line([(x + 8, y + 6), (x + w // 2 - 26, deck)], fill=color, width=3)
-    draw.line([(x + w - 8, y + 6), (x + w // 2 + 26, deck)], fill=color, width=3)
-    # the fallen middle span, tilted into the water below
-    draw.line([(x + w // 2 - 26, deck), (x + w // 2 + 10, deck + 16)],
-              fill=RED, width=6)
-    draw.line([(x + w // 2 + 26, deck), (x + w // 2 + 40, deck + 10)],
-              fill=RED, width=6)
+def build():
+    for path in (SERIF_BOLD, SANS, SANS_BOLD):
+        if not os.path.exists(path):
+            raise SystemExit("missing font: %s" % path)
 
+    image = Image.new("RGB", (SIZE, SIZE), PAPER)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([14, 14, SIZE - 15, SIZE - 15], outline=INK, width=2)
 
-def flame(draw, cx, cy, s, color):
-    pts = [(cx, cy - 34 * s), (cx + 16 * s, cy - 6 * s),
-           (cx + 8 * s, cy + 4 * s), (cx + 20 * s, cy + 22 * s),
-           (cx, cy + 30 * s), (cx - 20 * s, cy + 22 * s),
-           (cx - 8 * s, cy + 4 * s), (cx - 16 * s, cy - 6 * s)]
-    draw.polygon(pts, fill=color)
+    draw_masthead(draw)
 
+    left = MARGIN
+    right = SIZE - MARGIN
+    mid_gap = 16
+    col_w = (right - left - mid_gap) // 2
 
-def tank(draw, x, y, w, color):
-    draw.rounded_rectangle([x, y + 18, x + w, y + 44], radius=8, fill=color)
-    draw.rectangle([x + w // 2 - 8, y, x + w // 2 + 8, y + 20], fill=color)
-    draw.line([(x + w // 2 + 8, y + 6), (x + w + 26, y + 2)],
-              fill=color, width=7)
-    for wx in (x + 14, x + w - 26):
-        draw.ellipse([wx, y + 46, wx + 12, y + 58], fill=INK)
+    # Lead story, full width.
+    draw_card(
+        draw, (left, 164, right, 344),
+        "THE LEAD  ·  SHENZHEN SUMMIT",
+        "Trump, Xi and Putin meet face to face",
+        "The first trilateral summit of its kind: 90 minutes on Ukraine, "
+        "nuclear arms and trade, ending in a joint \u201cpeace "
+        "declaration\u201d.",
+        head_size=38, body_sizes=(21, 20, 19))
+
+    # Second row: The Hague and the Kerch Strait.
+    draw_card(
+        draw, (left, 360, left + col_w, 556),
+        "THE HAGUE  ·  INTERNATIONAL COURT",
+        "Myanmar guilty of genocide",
+        "The court rules Myanmar committed genocide against the Rohingya, "
+        "the first such ruling by the UN\u2019s highest court.",
+        head_size=27, body_sizes=(19, 18, 17))
+    draw_card(
+        draw, (right - col_w, 360, right, 556),
+        "KERCH STRAIT  ·  THIRD STRIKE IN A WEEK",
+        "Kerch Bridge hit again",
+        "The Crimean Bridge is hit a third time in a week; a road span "
+        "falls and car traffic halts.",
+        head_size=27, body_sizes=(19, 18, 17))
+
+    # Third row: Gaza and Bangladesh.
+    draw_card(
+        draw, (left, 572, left + col_w, 768),
+        "GAZA  ·  GROUND OPERATION",
+        "Tanks push into central Gaza",
+        "Israeli tanks push into central Gaza past the ceasefire line in a "
+        "rare ground operation.",
+        head_size=27, body_sizes=(19, 18, 17))
+    draw_card(
+        draw, (right - col_w, 572, right, 768),
+        "BANGLADESH  ·  UNREST SPREADS",
+        "Violence reaches 28 districts",
+        "Muhammad Yunus\u2019s ancestral home is torched as violence "
+        "reaches 28 districts.",
+        head_size=27, body_sizes=(19, 18, 17))
+
+    # Closing band: art and climate.
+    draw_card(
+        draw, (left, 784, right, 940),
+        "ART & CLIMATE  ·  RECORD SALE AND COP31",
+        "Van Gogh sells for a record $190.4m",
+        "Van Gogh\u2019s \u201cChestnuts in Flower\u201d sells for a record "
+        "$190.4m, while COP31 ministers race to unblock talks in Antalya.",
+        head_size=30, body_sizes=(20, 19, 18))
+
+    draw_footer(draw)
+    return image
 
 
 def main():
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-
-    # ---- masthead -------------------------------------------------
-    d.rectangle([0, 0, W, 148], fill=NAVY)
-    d.rectangle([0, 148, W, 156], fill=GOLD)
-    d.text((36, 26), "THE WORLD  •  IN ONE IMAGE",
-           font=font(SANS_B, 26), fill=GOLD)
-    d.text((36, 62), "19 NOVEMBER 2026",
-           font=font(SERIF, 58), fill=(255, 255, 255))
-    d.text((36, 122), "THURSDAY  —  SHENZHEN  •  THE HAGUE  •  KERCH  •  GAZA  •  DHAKA",
-           font=font(SANS, 19), fill=(190, 198, 214))
-
-    # ---- lead story: Shenzhen summit ------------------------------
-    lx, ly, lw, lh = 28, 176, 968, 268
-    d.rounded_rectangle([lx, ly, lx + lw, ly + lh], radius=12,
-                        fill=CARD, outline=LINE, width=2)
-    d.rectangle([lx, ly, lx + lw, ly + 8], fill=RED)
-    tx = lx + 28
-    y = ly + 24
-    y = kicker(d, tx, y, "THE LEAD  —  SHENZHEN, CHINA")
-    y = headline(d, tx, y, "Trump, Xi and Putin meet face to face",
-                 40, 560)
-    y = para(d, tx, y + 4,
-             "The first trilateral summit of its kind: 90 minutes on "
-             "Ukraine, nuclear arms and trade — ending in a joint "
-             "“peace declaration”.",
-             font(SANS, 21), 560, fill=(60, 60, 70), leading=7)
-    # skyline panel on the right of the lead card
-    px, py, pw, ph = lx + 620, ly + 24, 320, 200
-    d.rectangle([px, py, px + pw, py + ph], fill=(232, 226, 208))
-    d.rectangle([px, py + ph - 58, px + pw, py + ph], fill=NAVY)
-    towers = [(0, 96), (34, 62), (72, 110), (108, 48), (150, 88),
-              (188, 58), (224, 100), (258, 70)]
-    for ox, th in towers:
-        d.rectangle([px + ox, py + ph - 58 - th, px + ox + 28,
-                     py + ph - 58], fill=(70, 78, 96))
-    d.ellipse([px + pw - 62, py + 14, px + pw - 18, py + 58], fill=GOLD)
-    # three flag discs for the three leaders
-    flags = [((178, 34, 34), "US"), ((222, 41, 16), "CN"),
-             ((0, 57, 166), "RU")]
-    for i, (col, lab) in enumerate(flags):
-        cx = px + 52 + i * 108
-        d.ellipse([cx - 30, py + ph - 56, cx + 30, py + ph + 4],
-                  fill=col, outline=(255, 255, 255), width=3)
-        d.text((cx - 12, py + ph - 36), lab, font=font(SANS_B, 20),
-               fill=(255, 255, 255))
-
-    # ---- middle row: two cards ------------------------------------
-    my, mh = 464, 268
-    # ICJ / Myanmar
-    card(d, 28, my, 474, mh, NAVY)
-    cx = 28 + 474 // 2
-    scales(d, cx, my + 72, 1.0, NAVY)
-    y = kicker(d, 52, my + 118, "THE HAGUE  —  WORLD COURT", size=19)
-    y = headline(d, 52, y, "ICJ: Myanmar committed genocide",
-                 26, 426)
-    para(d, 52, y + 2,
-         "The UN's highest court rules against Myanmar over the "
-         "Rohingya — a first of its kind.",
-         font(SANS, 17), 426, fill=(60, 60, 70), leading=5)
-    # Kerch bridge
-    card(d, 522, my, 474, mh, TEAL)
-    bridge(d, 522 + 474 // 2 - 150, my + 18, 300, 92, TEAL)
-    y = kicker(d, 546, my + 118, "KERCH STRAIT  —  UKRAINE WAR", size=19)
-    y = headline(d, 546, y, "Crimean Bridge hit a third time",
-                 26, 426)
-    para(d, 546, y + 2,
-         "A road span falls and car traffic halts after the week's "
-         "third strike on the bridge.",
-         font(SANS, 17), 426, fill=(60, 60, 70), leading=5)
-
-    # ---- bottom row: three cards ----------------------------------
-    by, bh, bw, gap = 748, 208, 310, 19
-    xs = [28, 28 + bw + gap, 28 + 2 * (bw + gap)]
-    # Gaza
-    card(d, xs[0], by, bw, bh, RED)
-    tank(d, xs[0] + bw // 2 - 45, by + 14, 90, (70, 78, 96))
-    y = kicker(d, xs[0] + 22, by + 84, "GAZA", size=19)
-    y = headline(d, xs[0] + 22, y, "Israeli tanks push past the ceasefire line",
-                 20, bw - 44)
-    para(d, xs[0] + 22, y + 2,
-         "A rare ground operation in central Gaza draws a Hamas "
-         "protest.", font(SANS, 15), bw - 44, fill=(60, 60, 70),
-         leading=4)
-    # Bangladesh
-    card(d, xs[1], by, bw, bh, (222, 120, 20))
-    flame(d, xs[1] + bw // 2, by + 50, 0.9, (222, 120, 20))
-    y = kicker(d, xs[1] + 22, by + 84, "BANGLADESH", size=19)
-    y = headline(d, xs[1] + 22, y, "Yunus home torched as unrest spreads",
-                 20, bw - 44)
-    para(d, xs[1] + 22, y + 2,
-         "Violence in 28 districts as the ousted party is outlawed.", font(SANS, 15), bw - 44,
-         fill=(60, 60, 70), leading=4)
-    # Culture & climate
-    card(d, xs[2], by, bw, bh, GOLD)
-    d.ellipse([xs[2] + bw // 2 - 32, by + 16, xs[2] + bw // 2 + 32,
-               by + 80], outline=GOLD, width=5)
-    d.text((xs[2] + bw // 2 - 19, by + 34), "$190m",
-           font=font(SANS_B, 19), fill=(150, 110, 10))
-    y = kicker(d, xs[2] + 22, by + 84, "ART & CLIMATE", size=19)
-    y = headline(d, xs[2] + 22, y, "Van Gogh sells for a record $190.4m",
-                 20, bw - 44)
-    para(d, xs[2] + 22, y + 2,
-         "“Chestnuts in Flower” sets a record; COP31 talks race on.",
-         font(SANS, 15), bw - 44, fill=(60, 60, 70), leading=4)
-
-    # ---- footer ----------------------------------------------------
-    d.rectangle([0, 972, W, H], fill=NAVY)
-    d.text((36, 988), "Six stories, one day  •  19 November 2026  •  Drawn from the day's reporting",
-           font=font(SANS, 18), fill=(190, 198, 214))
-
-    img.save("entry.png", optimize=True)
-    print("wrote entry.png", img.size)
+    image = build()
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = os.path.join(here, "entry.png")
+    image.save(out, format="PNG")
+    print("wrote %s" % out)
 
 
 if __name__ == "__main__":
